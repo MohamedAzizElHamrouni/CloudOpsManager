@@ -1,0 +1,239 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────── Enums ─────────────
+
+enum Role {
+  ADMIN
+  DEVOPS
+  VIEWER
+}
+
+enum ProjectStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+enum ProjectMemberRole {
+  OWNER
+  MEMBER
+}
+
+enum EnvironmentType {
+  DEV
+  STAGING
+  PROD
+}
+
+enum ServerStatus {
+  ONLINE
+  OFFLINE
+  MAINTENANCE
+}
+
+enum AppStatus {
+  RUNNING
+  STOPPED
+  FAILED
+  DEPLOYING
+}
+
+enum MetricType {
+  CPU
+  RAM
+  DISK
+}
+
+enum Operator {
+  GT
+  GTE
+  LT
+  LTE
+}
+
+enum Severity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+enum AlertStatus {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+}
+
+// ───────────── Entités ─────────────
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  firstName    String
+  lastName     String
+  role         Role     @default(VIEWER)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  memberships     ProjectMember[]
+  acknowledgedAlerts Alert[]      @relation("AlertAcknowledgedBy")
+  resolvedAlerts  Alert[]         @relation("AlertResolvedBy")
+  auditLogs       AuditLog[]
+}
+
+model Project {
+  id          String        @id @default(uuid())
+  name        String        @unique
+  description String?
+  status      ProjectStatus @default(ACTIVE)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  members      ProjectMember[]
+  environments Environment[]
+  servers      Server[]
+  applications Application[]
+}
+
+model ProjectMember {
+  id        String            @id @default(uuid())
+  projectId String
+  userId    String
+  role      ProjectMemberRole @default(MEMBER)
+  joinedAt  DateTime          @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+}
+
+model Environment {
+  id        String          @id @default(uuid())
+  projectId String
+  name      String
+  type      EnvironmentType
+  url       String?
+  createdAt DateTime        @default(now())
+
+  project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  applications Application[]
+
+  @@unique([projectId, name])
+}
+
+model Server {
+  id        String       @id @default(uuid())
+  projectId String?
+  name      String
+  provider  String // AWS, OVH, Hetzner, DigitalOcean...
+  region    String
+  cpuCores  Int
+  ramGb     Int
+  storageGb Int
+  ipAddress String       @unique
+  status    ServerStatus @default(ONLINE)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  project      Project?      @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  applications Application[]
+  metrics      Metric[]
+  alertRules   AlertRule[]
+  alerts       Alert[]
+}
+
+model Application {
+  id            String    @id @default(uuid())
+  projectId     String
+  serverId      String
+  environmentId String
+  name          String
+  version       String
+  status        AppStatus @default(RUNNING)
+  repoUrl       String?
+  deployedAt    DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  project     Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  server      Server      @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  // NoAction (et non Restrict) : la suppression d'un projet supprime en cascade
+  // ses environnements ET ses applications sans conflit de clé étrangère
+  environment Environment @relation(fields: [environmentId], references: [id], onDelete: NoAction)
+
+  @@index([serverId])
+  @@index([environmentId])
+}
+
+model Metric {
+  id         String   @id @default(uuid())
+  serverId   String
+  cpuUsage   Float // %
+  ramUsage   Float // %
+  diskUsage  Float // %
+  isUp       Boolean  @default(true)
+  recordedAt DateTime @default(now())
+
+  server Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
+
+  @@index([serverId, recordedAt])
+}
+
+model AlertRule {
+  id        String     @id @default(uuid())
+  serverId  String? // null = règle globale
+  name      String
+  metric    MetricType
+  operator  Operator   @default(GT)
+  threshold Float
+  severity  Severity   @default(WARNING)
+  enabled   Boolean    @default(true)
+  createdAt DateTime   @default(now())
+
+  server Server?  @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  alerts Alert[]
+}
+
+model Alert {
+  id             String      @id @default(uuid())
+  ruleId         String
+  serverId       String
+  status         AlertStatus @default(OPEN)
+  severity       Severity
+  value          Float
+  message        String
+  triggeredAt    DateTime    @default(now())
+  acknowledgedAt DateTime?
+  acknowledgedById String?
+  resolvedAt     DateTime?
+  resolvedById   String?
+
+  rule           AlertRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  server         Server    @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  acknowledgedBy User?     @relation("AlertAcknowledgedBy", fields: [acknowledgedById], references: [id])
+  resolvedBy     User?     @relation("AlertResolvedBy", fields: [resolvedById], references: [id])
+
+  @@index([status, severity])
+  @@index([serverId, triggeredAt])
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String?
+  action     String // ex: SERVER_CREATED
+  entityType String
+  entityId   String?
+  details    Json?
+  createdAt  DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId])
+}
